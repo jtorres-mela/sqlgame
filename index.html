@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Murder at Blackwood Manor</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="config.js"></script>
     <script defer src="vendor/alasql.min.js"></script>
     <script defer src="app.js"></script>
   </head>
@@ -15,8 +17,9 @@
           <p class="eyebrow">SQL Escape Room</p>
           <h1>Murder at Blackwood Manor</h1>
           <p class="hero-text">
-            The host is dead, the doors are locked, and the only way out is to
-            query the evidence before the house clock strikes zero.
+            The host is dead, the roads are cut by storm, and every suspect is
+            still inside the manor gates. Query the evidence before the house
+            clock strikes zero.
           </p>
         </div>
         <div class="hero-status">
@@ -62,9 +65,12 @@
             <h2>Case file</h2>
           </div>
           <p class="panel-copy">
-            Host Lucien Blackwood collapsed in the library at 21:12 after a
-            toast. The coroner found digitalis in his champagne. You have one
-            live case database, five clues to crack, and no time for guesses.
+            Lord Lucien Blackwood collapsed mid-toast in the manor library at
+            21:12. A winter storm has cut the roads; the nearest constable is
+            forty minutes out. The coroner confirms digitalis in his champagne —
+            a fatal dose prepared with clinical precision. Five suspects remain
+            inside the locked gates. You have one live case database, six clues
+            to crack, and no time for guesses.
           </p>
 
           <div class="suspect-grid" id="suspect-grid"></div>
@@ -90,7 +96,7 @@
 
           <div class="challenge-tags">
             <span class="challenge-tag" id="challenge-concept"></span>
-            <span class="challenge-tag warning-tag">Use the exact output columns requested.</span>
+            <span class="challenge-tag warning-tag" id="challenge-warning-tag">Use the exact output columns requested.</span>
           </div>
 
           <button class="ghost-button" id="hint-button" type="button">
@@ -167,6 +173,34 @@
           </section>
         </aside>
       </main>
+    </div>
+
+    <div class="overlay" id="start-overlay">
+      <div class="overlay-card">
+        <p class="overlay-kicker">SQL Escape Room</p>
+        <h2>Murder at Blackwood Manor</h2>
+        <p>
+          A detective's name is required before the case goes live. The clock
+          starts the moment you begin.
+        </p>
+        <div class="start-form">
+          <label class="sr-only" for="start-name-input">Detective name</label>
+          <input
+            class="identity-input"
+            id="start-name-input"
+            type="text"
+            maxlength="24"
+            placeholder="Detective name (required)"
+            autocomplete="name"
+          />
+          <p class="start-name-error" id="start-name-error" hidden>
+            Enter a name to begin the investigation.
+          </p>
+          <button class="primary-button" id="begin-button" type="button">
+            Begin Investigation
+          </button>
+        </div>
+      </div>
     </div>
 
     <div class="overlay hidden" id="overlay">

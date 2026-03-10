@@ -255,6 +255,13 @@ input {
   margin-top: 8px;
 }
 
+.suspect-detail {
+  margin-top: 6px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+
 .case-meta {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -540,6 +547,20 @@ select {
 
 .overlay.hidden {
   display: none;
+}
+
+.start-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+  max-width: 400px;
+  margin-inline: auto;
+}
+
+.start-name-error {
+  margin: 0;
+  font-size: 0.94rem;
+  color: #d05a4a;
 }
 
 .overlay-card {

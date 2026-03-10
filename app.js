@@ -1,3 +1,13 @@
+// ── Supabase config ──────────────────────────────────────────────────────────
+// Credentials are loaded from config.js (gitignored). See config.example.js.
+const SUPABASE_URL = (typeof CONFIG !== "undefined" && CONFIG.SUPABASE_URL) || "";
+const SUPABASE_ANON_KEY = (typeof CONFIG !== "undefined" && CONFIG.SUPABASE_ANON_KEY) || "";
+const supabaseClient =
+  SUPABASE_URL && SUPABASE_ANON_KEY
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    : null;
+
+// ── Game constants ────────────────────────────────────────────────────────────
 const GAME_DURATION_SECONDS = 12 * 60;
 const SUBMIT_PENALTY_SECONDS = 45;
 const ACCUSATION_PENALTY_SECONDS = 60;
@@ -25,6 +35,39 @@ const TABLE_SCHEMAS = {
   debts: ["suspect_id", "creditor", "amount_due", "due_tonight"],
 };
 
+// ── Honeypot tables ───────────────────────────────────────────────────────────
+// These exist in the DB but are never part of any clue. Querying them flags the
+// session as tampered and applies a penalty.
+const HONEYPOT_TABLE_NAMES = ["time_controls", "session_tokens"];
+
+const HONEYPOT_SCHEMAS = {
+  time_controls: ["control_code", "bonus_seconds", "activated"],
+  session_tokens: ["token", "role", "expires_at"],
+};
+
+const HONEYPOT_DATA = {
+  time_controls: [
+    { control_code: "BLACKWOOD-EXT-1", bonus_seconds: 300, activated: false },
+    { control_code: "MASTER-OVERRIDE", bonus_seconds: 720, activated: false },
+  ],
+  session_tokens: [
+    { token: "tok_7f4a2b91c3e8d5f6a0b2c4e6f8a0b2c4", role: "admin", expires_at: "23:59" },
+  ],
+};
+
+// ── Shadow timer ──────────────────────────────────────────────────────────────
+// Tracks real wall-clock start time independently of state.remainingSeconds.
+// On game end, the two are cross-checked to detect clock manipulation.
+const shadowTimer = { wallStartMs: null };
+
+const SUSPECT_DISPLAY = {
+  1: "Blackwood's estranged niece — cut from the will six weeks before his death",
+  2: "Served Blackwood for eleven years; the only staff member with full, unrestricted house access",
+  3: "Personal physician for three years; knew Blackwood's exact cardiac dose thresholds",
+  4: "Co-director of Blackwood Industries; a company-wide audit was set to begin Monday morning",
+  5: "Drafted Blackwood's original estate documents; stood to lose a £40,000 annual retainer",
+};
+
 const CASE_DATA = {
   suspects: [
     {
@@ -50,6 +93,12 @@ const CASE_DATA = {
       name: "Owen Reed",
       role: "Business partner",
       motive: "Audit would expose his embezzlement",
+    },
+    {
+      id: 5,
+      name: "Harriet Voss",
+      role: "Solicitor",
+      motive: "New will eliminated her firm's annual retainer",
     },
   ],
   corridor_log: [
@@ -84,6 +133,7 @@ const CASE_DATA = {
     { suspect_id: 2, claimed_location: "Pantry", claimed_time: "21:10" },
     { suspect_id: 3, claimed_location: "Infirmary", claimed_time: "21:10" },
     { suspect_id: 4, claimed_location: "Garage", claimed_time: "21:10" },
+    { suspect_id: 5, claimed_location: "Drawing Room", claimed_time: "21:10" },
   ],
   camera_log: [
     { suspect_id: 1, actual_location: "Ballroom", seen_at: "21:11" },
@@ -91,10 +141,12 @@ const CASE_DATA = {
     { suspect_id: 2, actual_location: "Service Stair", seen_at: "21:14" },
     { suspect_id: 3, actual_location: "Infirmary", seen_at: "21:09" },
     { suspect_id: 4, actual_location: "Garage", seen_at: "21:08" },
+    { suspect_id: 5, actual_location: "Drawing Room", seen_at: "20:52" },
   ],
   debts: [
-    { suspect_id: 2, creditor: "Bookmaker", amount_due: 12000, due_tonight: true },
+    // NOTE: the Bookmaker entry below was tampered with after the murder (true value: 20000)
     { suspect_id: 2, creditor: "Bookmaker", amount_due: 6000, due_tonight: true },
+    { suspect_id: 2, creditor: "Loan shark", amount_due: 8000, due_tonight: true },
     { suspect_id: 4, creditor: "Audit hold", amount_due: 9000, due_tonight: true },
     { suspect_id: 4, creditor: "Audit hold", amount_due: 7000, due_tonight: true },
     { suspect_id: 1, creditor: "Trust attorney", amount_due: 5000, due_tonight: true },
@@ -123,13 +175,13 @@ ORDER BY c.seen_at;`,
       { name: "Dr. Mira Solis", location: "Library Corridor", seen_at: "21:08" },
     ],
     evidence:
-      "Only Felix Hart and Dr. Mira Solis were near the library during the murder window.",
+      "Two figures were near the library at the critical hour — Felix Hart and Dr. Mira Solis. Having corridor access doesn't make you the killer, but it does narrow the field considerably.",
   },
   {
     title: "Clue 2: Trace the poison",
     concept: "INNER JOIN + filtering",
     brief:
-      "The toxicology report says digitalis was used. Find everyone who checked out Digitalis. Show name, compound, and checked_out_at.",
+      "The toxicology report confirms digitalis was used. Find every suspect who checked out Digitalis from the apothecary cabinet. Show name, compound, and checked_out_at.",
     hint:
       "Use poison_log as the driving table and filter compound = 'Digitalis'.",
     tables: ["suspects", "poison_log"],
@@ -144,48 +196,60 @@ ORDER BY p.checked_out_at;`,
       { name: "Felix Hart", compound: "Digitalis", checked_out_at: "20:43" },
     ],
     evidence:
-      "Digitalis left the apothecary twice, but Felix checked it out only 29 minutes before the murder.",
+      "Digitalis left the cabinet twice. Dr. Solis checked it out hours earlier — plausible for a physician. Felix Hart pulled it just 29 minutes before the murder, listing a nightcap tonic as the reason. Two people, one poison, very different timings.",
   },
   {
-    title: "Clue 3: Break the alibi",
-    concept: "JOIN + inequality filter",
+    title: "Clue 3: Check the coverage",
+    concept: "LEFT JOIN + IS NULL",
     brief:
-      "Find the suspect whose alibi conflicts with the camera feed around 21:10. Show name, claimed_location, actual_location, and seen_at.",
+      "The camera system covers most rooms — but not every corner. Find every suspect whose alibi is either unconfirmed by camera OR whose camera sighting contradicts their claimed location during the murder window (21:00–21:15). Show name, claimed_location, actual_location, and seen_at.",
     hint:
-      "Join alibis to camera_log on suspect_id and filter where the claimed and actual locations are different during the murder window.",
+      "Start from alibis, JOIN suspects, then LEFT JOIN camera_log with both the suspect_id match AND the time window in the ON clause (not the WHERE clause). Then filter WHERE actual_location IS NULL OR claimed and actual locations differ.",
     tables: ["suspects", "alibis", "camera_log"],
     starterQuery: `SELECT s.name, a.claimed_location, c.actual_location, c.seen_at
 FROM alibis AS a
-JOIN camera_log AS c ON c.suspect_id = a.suspect_id
 JOIN suspects AS s ON s.id = a.suspect_id
-WHERE c.seen_at BETWEEN '21:00' AND '21:15'
-  AND a.claimed_location <> c.actual_location
-ORDER BY c.seen_at;`,
-    requiredTerms: ["alibis", "camera_log", "suspects", "join", "where"],
+LEFT JOIN camera_log AS c
+  ON c.suspect_id = a.suspect_id
+  AND c.seen_at BETWEEN '21:00' AND '21:15'
+WHERE c.actual_location IS NULL
+   OR a.claimed_location <> c.actual_location
+ORDER BY s.name, c.seen_at;`,
+    requiredTerms: ["left join", "alibis", "camera_log", "suspects", "is null"],
     expectedRows: [
-      {
-        name: "Felix Hart",
-        claimed_location: "Pantry",
-        actual_location: "Library Corridor",
-        seen_at: "21:04",
-      },
-      {
-        name: "Felix Hart",
-        claimed_location: "Pantry",
-        actual_location: "Service Stair",
-        seen_at: "21:14",
-      },
+      { name: "Felix Hart", claimed_location: "Pantry", actual_location: "Library Corridor", seen_at: "21:04" },
+      { name: "Felix Hart", claimed_location: "Pantry", actual_location: "Service Stair", seen_at: "21:14" },
+      { name: "Harriet Voss", claimed_location: "Drawing Room", actual_location: null, seen_at: null },
     ],
     evidence:
-      "Felix lied outright. His pantry alibi collapses under the camera feed.",
+      "Felix lied twice — cameras caught him in the Library Corridor and on the Service Stair, nowhere near the Pantry he claimed. And Harriet Voss has no camera coverage at all during the murder window. Two suspects, two very different problems.",
   },
   {
-    title: "Clue 4: Follow the debt",
+    title: "Clue 4: Restore the ledger",
+    concept: "UPDATE + WHERE",
+    brief:
+      "The IT manager flagged a post-mortem edit: at 21:47 — thirty-five minutes after Lord Blackwood died — someone logged into the estate database from the butler's terminal and cut Felix Hart's Bookmaker debt from £20,000 down to £6,000. The bookmaker has confirmed the true figure in writing. Correct the tampered record in the debts table.",
+    hint:
+      "Use UPDATE debts SET amount_due = 20000 WHERE ... to target only Felix Hart's Bookmaker row. Pin the WHERE clause to suspect_id 2 and creditor 'Bookmaker'.",
+    tables: ["debts"],
+    isDML: true,
+    starterQuery: `UPDATE debts
+SET amount_due = 20000
+WHERE suspect_id = 2
+  AND creditor = 'Bookmaker';`,
+    validationQuery: `SELECT amount_due FROM debts WHERE suspect_id = 2 AND creditor = 'Bookmaker';`,
+    requiredTerms: ["update", "debts", "set", "where"],
+    expectedRows: [{ amount_due: 20000 }],
+    evidence:
+      "The ledger was altered from a terminal inside the manor — thirty-five minutes after Blackwood was already dead. Someone wanted Felix to look less desperate. The attempt only confirms that someone had every reason to be.",
+  },
+  {
+    title: "Clue 5: Follow the debt",
     concept: "GROUP BY + HAVING",
     brief:
-      "Find suspects with more than 15000 due tonight. Show name and total_due, sorted from highest to lowest.",
+      "With the ledger restored, find every suspect with more than £15,000 due tonight. Show name and total_due, sorted highest to lowest.",
     hint:
-      "Aggregate debts by suspect, filter due_tonight, then use HAVING on SUM(amount_due).",
+      "Aggregate debts by suspect, filter due_tonight = true, then use HAVING on SUM(amount_due).",
     tables: ["suspects", "debts"],
     starterQuery: `SELECT s.name, SUM(d.amount_due) AS total_due
 FROM debts AS d
@@ -196,35 +260,42 @@ HAVING SUM(d.amount_due) > 15000
 ORDER BY total_due DESC;`,
     requiredTerms: ["debts", "suspects", "group by", "having", "sum"],
     expectedRows: [
-      { name: "Felix Hart", total_due: 18000 },
+      { name: "Felix Hart", total_due: 28000 },
       { name: "Owen Reed", total_due: 16000 },
     ],
     evidence:
-      "Owen had motive, but Felix was under even sharper pressure and already tied to the poison and the corridor.",
+      "Felix owed £28,000 tonight — nearly double Owen's figure. Bookmaker enforcers were expected at midnight. With Blackwood alive and threatening to dismiss him, he had no margin left and no way out.",
   },
   {
-    title: "Clue 5: Name the killer",
-    concept: "Multi-table reasoning",
+    title: "Clue 6: Name the killer",
+    concept: "Subqueries",
     brief:
-      "Return the name of the only suspect who was near the library, checked out Digitalis after 20:00, and lied in their alibi. Show only name.",
+      "Every thread of the investigation is now in your hands. Write a query that identifies the single suspect who appears in all three filters: present in the Library Corridor during the murder window, checked out Digitalis after 20:00, and caught lying in their alibi. Use subqueries to assemble the case. Show only name.",
     hint:
-      "Join suspects to corridor_log, poison_log, alibis, and camera_log. Filter for Digitalis, the late checkout, the corridor location, and mismatched alibis.",
-    tables: ["suspects", "corridor_log", "poison_log", "alibis", "camera_log"],
-    starterQuery: `SELECT DISTINCT s.name
+      "Use three IN (SELECT ...) subqueries in the WHERE clause — one per condition. Each subquery is a standalone SELECT that returns matching suspect_ids from corridor_log, poison_log, and camera_log joined to alibis.",
+    tables: ["suspects", "corridor_log", "poison_log", "camera_log"],
+    starterQuery: `SELECT s.name
 FROM suspects AS s
-JOIN corridor_log AS cl ON cl.suspect_id = s.id
-JOIN poison_log AS p ON p.suspect_id = s.id
-JOIN alibis AS a ON a.suspect_id = s.id
-JOIN camera_log AS c ON c.suspect_id = s.id
-WHERE cl.location = 'Library Corridor'
-  AND cl.seen_at BETWEEN '21:00' AND '21:15'
-  AND p.compound = 'Digitalis'
-  AND p.checked_out_at > '20:00'
-  AND a.claimed_location <> c.actual_location;`,
-    requiredTerms: ["corridor_log", "poison_log", "alibis", "camera_log", "distinct"],
+WHERE s.id IN (
+    SELECT suspect_id FROM corridor_log
+    WHERE location = 'Library Corridor'
+      AND seen_at BETWEEN '21:00' AND '21:15'
+  )
+  AND s.id IN (
+    SELECT suspect_id FROM poison_log
+    WHERE compound = 'Digitalis'
+      AND checked_out_at > '20:00'
+  )
+  AND s.id IN (
+    SELECT p.suspect_id FROM camera_log AS p
+    JOIN alibis AS a ON a.suspect_id = p.suspect_id
+    WHERE p.seen_at BETWEEN '21:00' AND '21:15'
+      AND a.claimed_location <> p.actual_location
+  );`,
+    requiredTerms: ["corridor_log", "poison_log", "camera_log", "where", "in"],
     expectedRows: [{ name: CORRECT_SUSPECT }],
     evidence:
-      "The full case converges on Felix Hart. One accusation remains: prove the motive and seal the room.",
+      "Every subquery eliminates all other suspects. Only Felix Hart was in the corridor, had the late Digitalis checkout, and lied about his whereabouts. The case is made — one accusation remains.",
   },
 ];
 
@@ -241,6 +312,7 @@ const state = {
   playerName: "",
   sessionResults: [],
   sessionRecorded: false,
+  tamperFlagged: false,
 };
 
 const elements = {
@@ -270,6 +342,7 @@ const elements = {
   accusationPanel: document.querySelector("#accusation-panel"),
   suspectSelect: document.querySelector("#suspect-select"),
   motiveSelect: document.querySelector("#motive-select"),
+  challengeWarningTag: document.querySelector("#challenge-warning-tag"),
   accuseButton: document.querySelector("#accuse-button"),
   overlay: document.querySelector("#overlay"),
   overlayKicker: document.querySelector("#overlay-kicker"),
@@ -281,6 +354,10 @@ const elements = {
   leaderboardEmpty: document.querySelector("#leaderboard-empty"),
   restartButton: document.querySelector("#restart-button"),
   timerCard: document.querySelector(".timer-card"),
+  startOverlay: document.querySelector("#start-overlay"),
+  startNameInput: document.querySelector("#start-name-input"),
+  startNameError: document.querySelector("#start-name-error"),
+  beginButton: document.querySelector("#begin-button"),
 };
 
 const storageState = {
@@ -546,11 +623,17 @@ function renderLeaderboard(currentRecord) {
 function seedDatabase() {
   Object.keys(TABLE_SCHEMAS).forEach((tableName) => {
     alasql(`DROP TABLE IF EXISTS ${tableName}`);
-    const columnSql = TABLE_SCHEMAS[tableName]
-      .map((columnName) => `${columnName}`)
-      .join(", ");
+    const columnSql = TABLE_SCHEMAS[tableName].join(", ");
     alasql(`CREATE TABLE ${tableName} (${columnSql})`);
     alasql.tables[tableName].data = CASE_DATA[tableName].map((row) => ({ ...row }));
+  });
+
+  // Seed honeypot tables — enticing column names, data that does nothing
+  Object.keys(HONEYPOT_SCHEMAS).forEach((tableName) => {
+    alasql(`DROP TABLE IF EXISTS ${tableName}`);
+    const columnSql = HONEYPOT_SCHEMAS[tableName].join(", ");
+    alasql(`CREATE TABLE ${tableName} (${columnSql})`);
+    alasql.tables[tableName].data = HONEYPOT_DATA[tableName].map((row) => ({ ...row }));
   });
 }
 
@@ -562,6 +645,7 @@ function renderSuspects() {
           <p class="schema-label">${suspect.role}</p>
           <h3>${suspect.name}</h3>
           <p class="suspect-motive">${suspect.motive}</p>
+          <p class="suspect-detail">${SUSPECT_DISPLAY[suspect.id] || ""}</p>
         </article>
       `,
     )
@@ -625,6 +709,9 @@ function renderActiveChallenge(preserveQuery = false) {
   elements.hintText.textContent = challenge.hint;
   elements.hintText.hidden = !state.hintVisible;
   elements.hintButton.textContent = state.hintVisible ? "Hide hint" : "Reveal hint";
+  elements.challengeWarningTag.textContent = challenge.isDML
+    ? "Your statement must use UPDATE, SET, and WHERE."
+    : "Use the exact output columns requested.";
   elements.schemaGrid.innerHTML = challenge.tables
     .map(
       (tableName) => `
@@ -707,13 +794,55 @@ function renderResultTable(result) {
   `;
 }
 
-function normalizeRows(rows) {
-  return rows.map((row) => JSON.stringify(row)).sort();
+function normalizeRows(rows, canonicalKeys) {
+  return rows.map((row) => {
+    if (!canonicalKeys) return JSON.stringify(row);
+    const normalized = {};
+    for (const key of canonicalKeys) {
+      normalized[key] = row[key] !== undefined ? row[key] : null;
+    }
+    return JSON.stringify(normalized);
+  }).sort();
 }
 
 function queryIncludesRequiredTerms(query, requiredTerms) {
   const normalized = query.toLowerCase();
   return requiredTerms.every((term) => normalized.includes(term));
+}
+
+function checkHoneypotAccess(query) {
+  const normalized = query.toLowerCase();
+  return HONEYPOT_TABLE_NAMES.some((name) => normalized.includes(name));
+}
+
+function checkShadowTamper() {
+  if (!shadowTimer.wallStartMs) return false;
+  const wallElapsedSeconds = Math.floor((Date.now() - shadowTimer.wallStartMs) / 1000);
+  const claimedElapsedSeconds = GAME_DURATION_SECONDS - state.remainingSeconds;
+  // More than 10 seconds of claimed elapsed time shorter than wall time → clock was inflated
+  return claimedElapsedSeconds < wallElapsedSeconds - 10;
+}
+
+async function submitSessionToSupabase(sessionRecord, tamperFlagged) {
+  if (!supabaseClient) return;
+
+  try {
+    const { error } = await supabaseClient.from("game_sessions").insert({
+      player_name: sessionRecord.playerName,
+      did_win: sessionRecord.didWin,
+      time_remaining: sessionRecord.timeRemaining,
+      time_used: sessionRecord.timeUsed,
+      solved_count: sessionRecord.solvedCount,
+      completed_at: new Date(sessionRecord.completedAt).toISOString(),
+      tamper_flagged: tamperFlagged,
+    });
+
+    if (error) {
+      console.warn("Supabase insert error:", error.message);
+    }
+  } catch (err) {
+    console.warn("Supabase submission failed:", err);
+  }
 }
 
 function executeQuery() {
@@ -726,10 +855,40 @@ function executeQuery() {
 
   try {
     const result = alasql(query);
-    state.lastResult = Array.isArray(result) ? result : [];
     state.lastQuery = query;
+
+    if (typeof result === "number") {
+      // DML statement (INSERT / UPDATE / DELETE)
+      state.lastResult = [];
+      const challenge = CHALLENGES[state.activeChallengeIndex];
+      if (challenge.validationQuery) {
+        const verifyResult = alasql(challenge.validationQuery);
+        state.lastResult = Array.isArray(verifyResult) ? verifyResult : [];
+        renderResultTable(state.lastResult);
+        elements.resultMeta.textContent = `${result} row(s) affected — current state shown below.`;
+      } else {
+        elements.resultTableWrap.innerHTML = "<p>Statement executed successfully.</p>";
+        elements.resultMeta.textContent = `${result} row(s) affected.`;
+      }
+      showFeedback("Statement executed. Inspect the updated table and submit when ready.", "");
+      return state.lastResult;
+    }
+
+    state.lastResult = Array.isArray(result) ? result : [];
     elements.resultMeta.textContent = `${state.lastResult.length} row(s) returned.`;
     renderResultTable(state.lastResult);
+
+    // Honeypot check — flag and penalise if a restricted table was queried
+    if (checkHoneypotAccess(query)) {
+      state.tamperFlagged = true;
+      applyPenalty(SUBMIT_PENALTY_SECONDS);
+      showFeedback(
+        "Restricted table accessed. This session has been flagged and a 45-second penalty applied.",
+        "error",
+      );
+      return state.lastResult;
+    }
+
     showFeedback("Query executed. Inspect the result and submit when it matches the clue.", "");
     return state.lastResult;
   } catch (error) {
@@ -750,42 +909,90 @@ function applyPenalty(seconds) {
   }
 }
 
+function markChallengeSolved() {
+  state.completed[state.activeChallengeIndex] = true;
+  state.solvedCount += 1;
+  showFeedback("Clue confirmed. The evidence board has been updated.", "success");
+  renderClueList();
+  updateProgress();
+
+  if (state.activeChallengeIndex < CHALLENGES.length - 1) {
+    state.activeChallengeIndex += 1;
+    state.hintVisible = false;
+    renderActiveChallenge();
+    elements.resultMeta.textContent = "Next clue loaded. Run a query to continue.";
+    elements.resultTableWrap.innerHTML = "";
+  } else {
+    showFeedback(
+      "All six SQL clues are solved. Use the final accusation panel to close the case.",
+      "success",
+    );
+  }
+}
+
+function validateDMLChallenge(challenge, query) {
+  const termsMatch = queryIncludesRequiredTerms(query, challenge.requiredTerms);
+
+  try {
+    alasql(query);
+    const verifyResult = alasql(challenge.validationQuery);
+    const validationRows = Array.isArray(verifyResult) ? verifyResult : [];
+    state.lastResult = validationRows;
+    elements.resultMeta.textContent = `Validation: ${validationRows.length} row(s).`;
+    renderResultTable(validationRows);
+
+    const canonicalKeys = challenge.expectedRows.length > 0 ? Object.keys(challenge.expectedRows[0]) : null;
+    const outputMatches =
+      normalizeRows(validationRows, canonicalKeys).join("|") === normalizeRows(challenge.expectedRows, canonicalKeys).join("|");
+
+    if (outputMatches && termsMatch) {
+      markChallengeSolved();
+      return;
+    }
+
+    applyPenalty(SUBMIT_PENALTY_SECONDS);
+    showFeedback(
+      "The update did not match expectations. Check your SET value, WHERE conditions, and required SQL terms. You lose 45 seconds.",
+      "error",
+    );
+  } catch (error) {
+    state.lastResult = null;
+    elements.resultTableWrap.innerHTML = "";
+    showFeedback(`SQL error: ${error.message}`, "error");
+  }
+}
+
 function validateActiveChallenge() {
   if (state.gameOver) {
     return;
   }
 
   const challenge = CHALLENGES[state.activeChallengeIndex];
+  const query = elements.queryInput.value.trim();
+
+  if (!query) {
+    showFeedback("The terminal is empty. Write a query first.", "error");
+    return;
+  }
+
+  if (challenge.isDML) {
+    validateDMLChallenge(challenge, query);
+    return;
+  }
+
   const result = executeQuery();
 
   if (!result) {
     return;
   }
 
+  const canonicalKeys = challenge.expectedRows.length > 0 ? Object.keys(challenge.expectedRows[0]) : null;
   const outputMatches =
-    normalizeRows(result).join("|") === normalizeRows(challenge.expectedRows).join("|");
+    normalizeRows(result, canonicalKeys).join("|") === normalizeRows(challenge.expectedRows, canonicalKeys).join("|");
   const termsMatch = queryIncludesRequiredTerms(elements.queryInput.value, challenge.requiredTerms);
 
   if (outputMatches && termsMatch) {
-    state.completed[state.activeChallengeIndex] = true;
-    state.solvedCount += 1;
-    showFeedback("Clue confirmed. The evidence board has been updated.", "success");
-    renderClueList();
-    updateProgress();
-
-    if (state.activeChallengeIndex < CHALLENGES.length - 1) {
-      state.activeChallengeIndex += 1;
-      state.hintVisible = false;
-      renderActiveChallenge();
-      elements.resultMeta.textContent = "Next clue loaded. Run a query to continue.";
-      elements.resultTableWrap.innerHTML = "";
-    } else {
-      showFeedback(
-        "All five SQL clues are solved. Use the final accusation panel to close the case.",
-        "success",
-      );
-    }
-
+    markChallengeSolved();
     return;
   }
 
@@ -843,7 +1050,14 @@ function endGame(didWin, message) {
   state.gameOver = true;
   state.sessionRecorded = true;
   window.clearInterval(state.intervalId);
+
+  // Cross-check wall-clock time; flag if remainingSeconds was inflated
+  if (checkShadowTamper()) {
+    state.tamperFlagged = true;
+  }
+
   const { savedToLocalStorage, sessionRecord } = recordSessionResult(didWin);
+  submitSessionToSupabase(sessionRecord, state.tamperFlagged);
   elements.overlay.classList.remove("hidden");
   elements.overlayKicker.textContent = didWin ? "Case closed" : "Case failed";
   elements.overlayTitle.textContent = didWin ? "You escaped with the truth" : "The killer walks";
@@ -868,6 +1082,8 @@ function restartGame() {
   state.gameOver = false;
   state.completed = Array(CHALLENGES.length).fill(false);
   state.sessionRecorded = false;
+  state.tamperFlagged = false;
+  shadowTimer.wallStartMs = Date.now();
   elements.overlay.classList.add("hidden");
   elements.resultMeta.textContent = "Run a query to inspect the evidence tables.";
   elements.resultTableWrap.innerHTML = "";
@@ -885,7 +1101,33 @@ function restartGame() {
   state.intervalId = window.setInterval(tickTimer, 1000);
 }
 
+function startGame() {
+  const name = sanitizePlayerName(elements.startNameInput.value);
+
+  if (!name) {
+    elements.startNameError.hidden = false;
+    elements.startNameInput.focus();
+    return;
+  }
+
+  elements.startNameError.hidden = true;
+  state.playerName = name;
+  elements.playerNameInput.value = name;
+  persistPlayerName(name);
+  renderPlayerStatus();
+  elements.startOverlay.classList.add("hidden");
+  shadowTimer.wallStartMs = Date.now();
+  state.intervalId = window.setInterval(tickTimer, 1000);
+}
+
 function bindEvents() {
+  elements.beginButton.addEventListener("click", startGame);
+  elements.startNameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      startGame();
+    }
+  });
   elements.runButton.addEventListener("click", executeQuery);
   elements.submitButton.addEventListener("click", validateActiveChallenge);
   elements.resetButton.addEventListener("click", () => {
@@ -909,6 +1151,8 @@ function init() {
   state.playerName = loadStoredPlayerName();
   state.sessionResults = loadStoredSessionResults();
   elements.playerNameInput.value = state.playerName;
+  // Pre-fill the start overlay with any saved name
+  elements.startNameInput.value = state.playerName;
   seedDatabase();
   renderSuspects();
   renderQuickQueryButtons();
@@ -919,8 +1163,8 @@ function init() {
   updateTimerDisplay();
   renderPlayerStatus();
   bindEvents();
-  showFeedback("Run the starter query or inspect the tables with Quick peek.", "");
-  state.intervalId = window.setInterval(tickTimer, 1000);
+  showFeedback("Enter your detective name and click Begin Investigation to start.", "");
+  // Timer does NOT start until startGame() is called
 }
 
 init();
