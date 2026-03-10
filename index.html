@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Murder at Blackwood Manor</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="vendor/alasql.min.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">SQL Escape Room</p>
+          <h1>Murder at Blackwood Manor</h1>
+          <p class="hero-text">
+            The host is dead, the doors are locked, and the only way out is to
+            query the evidence before the house clock strikes zero.
+          </p>
+        </div>
+        <div class="hero-status">
+          <section class="status-card timer-card">
+            <p class="status-label">Time left</p>
+            <p class="status-value" id="timer-display">12:00</p>
+            <p class="status-note">Wrong evidence costs 45 seconds.</p>
+          </section>
+          <section class="status-card">
+            <p class="status-label">Case progress</p>
+            <p class="status-value" id="progress-text">0 / 5 clues solved</p>
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-fill" id="progress-fill"></div>
+            </div>
+          </section>
+          <section class="status-card identity-card">
+            <p class="status-label">Detective log</p>
+            <label class="sr-only" for="player-name-input">Detective name</label>
+            <div class="identity-row">
+              <input
+                class="identity-input"
+                id="player-name-input"
+                type="text"
+                maxlength="24"
+                placeholder="Enter detective name"
+                autocomplete="name"
+              />
+              <button class="ghost-button compact-button" id="save-player-button" type="button">
+                Save
+              </button>
+            </div>
+            <p class="status-note" id="player-status">
+              Scores and session logs are stored in this browser.
+            </p>
+          </section>
+        </div>
+      </header>
+
+      <main class="board">
+        <section class="panel dossier-panel">
+          <div class="panel-header">
+            <p class="panel-kicker">Briefing</p>
+            <h2>Case file</h2>
+          </div>
+          <p class="panel-copy">
+            Host Lucien Blackwood collapsed in the library at 21:12 after a
+            toast. The coroner found digitalis in his champagne. You have one
+            live case database, five clues to crack, and no time for guesses.
+          </p>
+
+          <div class="suspect-grid" id="suspect-grid"></div>
+
+          <div class="case-meta">
+            <div>
+              <p class="meta-label">Murder window</p>
+              <p class="meta-value">21:00 - 21:15</p>
+            </div>
+            <div>
+              <p class="meta-label">Scene</p>
+              <p class="meta-value">Library, Blackwood Manor</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel challenge-panel">
+          <div class="panel-header">
+            <p class="panel-kicker" id="stage-label">Clue 1</p>
+            <h2 id="challenge-title">Loading case...</h2>
+          </div>
+          <p class="panel-copy" id="challenge-brief"></p>
+
+          <div class="challenge-tags">
+            <span class="challenge-tag" id="challenge-concept"></span>
+            <span class="challenge-tag warning-tag">Use the exact output columns requested.</span>
+          </div>
+
+          <button class="ghost-button" id="hint-button" type="button">
+            Reveal hint
+          </button>
+          <p class="hint-text" id="hint-text" hidden></p>
+
+          <div class="schema-block">
+            <div class="schema-header">
+              <h3>Active tables</h3>
+              <p>These are the tables you will need for the current clue.</p>
+            </div>
+            <div class="schema-grid" id="schema-grid"></div>
+          </div>
+
+          <label class="terminal-label" for="query-input">SQL terminal</label>
+          <textarea
+            id="query-input"
+            spellcheck="false"
+            autocomplete="off"
+            autocapitalize="off"
+          ></textarea>
+
+          <div class="button-row">
+            <button class="primary-button" id="run-button" type="button">
+              Run query
+            </button>
+            <button class="secondary-button" id="submit-button" type="button">
+              Submit evidence
+            </button>
+            <button class="ghost-button" id="reset-button" type="button">
+              Reset text
+            </button>
+          </div>
+
+          <div class="feedback" id="feedback" aria-live="polite"></div>
+
+          <section class="result-card">
+            <div class="result-header">
+              <h3>Query result</h3>
+              <p id="result-meta">Run a query to inspect the evidence tables.</p>
+            </div>
+            <div class="result-table-wrap" id="result-table-wrap"></div>
+          </section>
+        </section>
+
+        <aside class="panel evidence-panel">
+          <div class="panel-header">
+            <p class="panel-kicker">Evidence board</p>
+            <h2>Unlocked clues</h2>
+          </div>
+          <ol class="clue-list" id="clue-list"></ol>
+
+          <section class="reference-block">
+            <div class="reference-header">
+              <h3>Quick peek</h3>
+              <p>Load starter queries for any case table.</p>
+            </div>
+            <div class="quick-query-grid" id="quick-query-grid"></div>
+          </section>
+
+          <section class="accusation-panel is-locked" id="accusation-panel">
+            <div class="reference-header">
+              <h3>Final accusation</h3>
+              <p>Unlock all five clues to name the killer and motive.</p>
+            </div>
+            <label for="suspect-select">Suspect</label>
+            <select id="suspect-select"></select>
+            <label for="motive-select">Motive</label>
+            <select id="motive-select"></select>
+            <button class="primary-button" id="accuse-button" type="button">
+              Lock in accusation
+            </button>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <div class="overlay hidden" id="overlay">
+      <div class="overlay-card">
+        <p class="overlay-kicker" id="overlay-kicker"></p>
+        <h2 id="overlay-title"></h2>
+        <p id="overlay-copy"></p>
+        <div class="overlay-details">
+          <section class="overlay-panel">
+            <p class="overlay-section-label">Session record</p>
+            <dl class="session-stats" id="session-stats"></dl>
+            <p class="overlay-note" id="session-storage-note"></p>
+          </section>
+          <section class="overlay-panel">
+            <div class="overlay-panel-header">
+              <p class="overlay-section-label">Leaderboard</p>
+              <p class="overlay-note">Top 5 successful escapes by time remaining</p>
+            </div>
+            <ol class="leaderboard-list" id="leaderboard-list"></ol>
+            <p class="overlay-note" id="leaderboard-empty" hidden>
+              No completed escapes recorded yet.
+            </p>
+          </section>
+        </div>
+        <button class="primary-button" id="restart-button" type="button">
+          Restart case
+        </button>
+      </div>
+    </div>
+  </body>
+</html>
